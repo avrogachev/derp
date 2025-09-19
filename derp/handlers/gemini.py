@@ -206,6 +206,7 @@ class GeminiResponseHandler(MessageHandler):
     @flags.chat_action
     async def handle(self) -> Any:
         """Handle messages using Gemini API."""
+        sent_message: Message | None = None
         try:
             # Create tool dependencies
             # chat_settings: ChatSettingsResult | None = self.data.get("chat_settings")
@@ -240,7 +241,7 @@ class GeminiResponseHandler(MessageHandler):
             # Send the complete response
             text_response = self._format_response_text(final_response)[:4000]
 
-            sent_message = None
+            #sent_message = None
             if text_response:
                 sent_message = await self._send_text_safely(text_response)
 
@@ -252,30 +253,38 @@ class GeminiResponseHandler(MessageHandler):
             if sent_message:
                 # Wait for the middleware's database task to complete first to avoid race conditions
                 if "db_task" in self.data:
-                    await self.data["db_task"]
+                    try:
+                        await self.data["db_task"]
+                    except Exception:
+                        logfire.exception("db_task failed (continuing)")
 
                 # Store bot's response in database
-                db_client = get_database_client()
-                update = Update.model_validate(
-                    {"update_id": 0, "message": sent_message}
-                )
-                await db_client.create_bot_update_with_upserts(
-                    update_id=0,
-                    update_type="message",
-                    raw_data=update.model_dump(
-                        exclude_none=True, exclude_defaults=True
-                    ),
-                    user=sent_message.from_user,
-                    chat=sent_message.chat,
-                    sender_chat=None,
-                )
+                try:
+                    db_client = get_database_client()
+                    update = Update.model_validate(
+                        {"update_id": 0, "message": sent_message}
+                    )
+                    await db_client.create_bot_update_with_upserts(
+                        update_id=0,
+                        update_type="message",
+                        raw_data=update.model_dump(
+                            exclude_none=True, exclude_defaults=True
+                        ),
+                        user=sent_message.from_user,
+                        chat=sent_message.chat,
+                        sender_chat=None,
+                    )
+                except Exception:
+                    logfire.exception("Failed to log bot response to database (suppressed)")
 
             return sent_message
 
         except Exception:
             logfire.exception("Error in Gemini response handler")
-            return await self.event.reply(
-                _(
-                    "😅 Something went wrong with Gemini. I couldn't process that message."
+            if sent_message is None:
+                return await self.event.reply(
+                    _(
+                        "😅 Something went wrong with Gemini. I couldn't process that message."
+                    )
                 )
-            )
+            return sent_message
