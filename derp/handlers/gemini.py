@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import cached_property
 from typing import Any
 
 import aiogram.exceptions
@@ -104,7 +105,7 @@ async def extract_media_for_gemini(message: Message) -> list[dict[str, Any]]:
 class GeminiResponseHandler(MessageHandler):
     """Class-based message handler for AI responses using Google's native Gemini API."""
 
-    @property
+    @cached_property
     def gemini(self) -> Gemini:
         """Get the Gemini service instance."""
         return Gemini()
@@ -173,7 +174,7 @@ class GeminiResponseHandler(MessageHandler):
             return await self.event.reply(text, parse_mode="Markdown")
         except aiogram.exceptions.TelegramBadRequest as exc:
             if "can't parse entities" in exc.message:
-                return await self.event.reply(text, parse_mode=None)
+                return await self.event.reply(md.quote(text), parse_mode="Markdown")
             raise
 
     async def _send_image(
@@ -205,6 +206,7 @@ class GeminiResponseHandler(MessageHandler):
     @flags.chat_action
     async def handle(self) -> Any:
         """Handle messages using Gemini API."""
+        sent_message: Message | None = None
         try:
             # Create tool dependencies
             # chat_settings: ChatSettingsResult | None = self.data.get("chat_settings")
@@ -239,7 +241,7 @@ class GeminiResponseHandler(MessageHandler):
             # Send the complete response
             text_response = self._format_response_text(final_response)[:4000]
 
-            sent_message = None
+            #sent_message = None
             if text_response:
                 sent_message = await self._send_text_safely(text_response)
 
@@ -251,7 +253,10 @@ class GeminiResponseHandler(MessageHandler):
             if sent_message:
                 # Wait for the middleware's database task to complete first to avoid race conditions
                 if "db_task" in self.data:
-                    await self.data["db_task"]
+                    try:
+                        await self.data["db_task"]
+                    except Exception:
+                        logfire.exception("db_task failed (continuing)")
 
                 # Store bot's response in database
                 try:
@@ -269,17 +274,17 @@ class GeminiResponseHandler(MessageHandler):
                         chat=sent_message.chat,
                         sender_chat=None,
                     )
-                except Exception as e:
-                    logfire.exception(
-                        "Failed to store bot response in database", error=str(e)
-                    )
+                except Exception:
+                    logfire.exception("Failed to log bot response to database (suppressed)")
 
             return sent_message
 
         except Exception:
             logfire.exception("Error in Gemini response handler")
-            return await self.event.reply(
-                _(
-                    "😅 Something went wrong with Gemini. I couldn't process that message."
+            if sent_message is None:
+                return await self.event.reply(
+                    _(
+                        "😅 Something went wrong with Gemini. I couldn't process that message."
+                    )
                 )
-            )
+            return sent_message
